@@ -1,7 +1,7 @@
 package scalaz
 
 import scala.collection.mutable
-import std.vector._
+import std.vector.{vectorInstance, vectorMonoid}
 
 /**
   *
@@ -107,7 +107,7 @@ case class StrictTree[A](
   }
 
   /** Binds the given function across all the subtrees of this tree. */
-  def cobind[B](f: StrictTree[A] => B): StrictTree[B] = unfoldTree(this)(t => (f(t), t.subForest))
+  def cobind[B](f: StrictTree[A] => B): StrictTree[B] = unfoldTree(this)(t => (f(t), () => t.subForest))
 
   def foldNode[Z](f: A => Vector[StrictTree[A]] => Z): Z =
     f(rootLabel)(subForest)
@@ -225,6 +225,7 @@ sealed abstract class StrictTreeInstances {
   implicit def treeOrder[A](implicit A0: Order[A]): Order[StrictTree[A]] =
     new Order[StrictTree[A]] with StrictTreeEqual[A] {
       def A = A0
+      import std.vector._
       override def order(x: StrictTree[A], y: StrictTree[A]) =
         A.order(x.rootLabel, y.rootLabel) match {
           case Ordering.EQ =>
@@ -232,7 +233,14 @@ sealed abstract class StrictTreeInstances {
           case x => x
         }
     }
+
+
+
+  /* TODO
+  def applic[A, B](f: StrictTree[A => B]) = a => StrictTree.node((f.rootLabel)(a.rootLabel), implicitly[Applic[newtypes.ZipVector]].applic(f.subForest.map(applic[A, B](_)).?)(a.subForest ?).value)
+   */
 }
+
 
 object StrictTree extends StrictTreeInstances {
   /**
@@ -249,7 +257,7 @@ object StrictTree extends StrictTreeInstances {
   }
 
   /**
-   *  Leaf represents a tree node with no children.
+   *  Leaf represents a a tree node with no children.
    *
    *  You can use Leaf for tree construction or pattern matching.
    */
@@ -268,12 +276,12 @@ object StrictTree extends StrictTreeInstances {
     }
   }
 
-  def unfoldForest[A, B](s: Vector[A])(f: A => (B, Vector[A])): Vector[StrictTree[B]] =
+  def unfoldForest[A, B](s: Vector[A])(f: A => (B, () => Vector[A])): Vector[StrictTree[B]] =
     s.map(unfoldTree(_)(f))
 
-  def unfoldTree[A, B](v: A)(f: A => (B, Vector[A])): StrictTree[B] =
+  def unfoldTree[A, B](v: A)(f: A => (B, () => Vector[A])): StrictTree[B] =
     f(v) match {
-      case (a, bs) => Node(a, unfoldForest(bs)(f))
+      case (a, bs) => Node(a, unfoldForest(bs.apply())(f))
     }
 
   //Only used for .equals.
@@ -340,7 +348,7 @@ object StrictTree extends StrictTreeInstances {
     parent: Option[BottomUpStackElem[A, B]],
     tree: StrictTree[A]
   ) extends Iterator[StrictTree[A]] {
-    private[this] val subIterator = tree.subForest.iterator
+    private val subIterator = tree.subForest.iterator
 
     def rootLabel = tree.rootLabel
 
@@ -356,7 +364,7 @@ object StrictTree extends StrictTreeInstances {
     a: StrictTree[A],
     b: StrictTree[B]
   ) extends Iterator[(StrictTree[A], StrictTree[B])] {
-    private[this] val zippedSubIterator =
+    private val zippedSubIterator =
       a.subForest.iterator.zip(b.subForest.iterator)
 
     val mappedSubForest: mutable.Buffer[StrictTree[(A, B)]] = mutable.Buffer.empty
@@ -370,7 +378,7 @@ object StrictTree extends StrictTreeInstances {
     parent: Option[AlignStackElem[A, B, C]],
     trees: \&/[StrictTree[A], StrictTree[B]]
   ) extends Iterator[\&/[StrictTree[A], StrictTree[B]]] {
-    private[this] val iterators =
+    private val iterators =
       trees.bimap(_.subForest.iterator, _.subForest.iterator)
 
     val mappedSubForest: mutable.Buffer[StrictTree[C]] = mutable.Buffer.empty

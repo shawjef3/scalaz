@@ -1,8 +1,8 @@
 package scalaz
 
+import scalaz.Free.Trampoline
 import scalaz.Trampoline._
 import std.stream.{streamInstance, streamMonoid}
-import Free.Trampoline
 
 /**
  * A multi-way tree, also known as a rose tree. Also known as Cofree[Stream, A].
@@ -46,8 +46,8 @@ sealed abstract class Tree[A] {
    * and the histomorphic transform of its children.
    **/
   def scanr[B](g: (A, Stream[Tree[B]]) => B): Tree[B] = {
-    val c = Need(subForest.map(_.scanr(g)))
-    Node(g(rootLabel, c.value), c.value)
+    lazy val c = subForest.map(_.scanr(g))
+    Node(g(rootLabel, c), c)
   }
 
   /** A 2D String representation of this Tree, separated into lines.
@@ -125,10 +125,10 @@ sealed abstract class Tree[A] {
 
   /** Turns a tree of pairs into a pair of trees. */
   def unzip[A1, A2](implicit p: A => (A1, A2)): (Tree[A1], Tree[A2]) = {
-    val uz = Need(subForest.map(_.unzip))
-    val fst = Need(uz.value map (_._1))
-    val snd = Need(uz.value map (_._2))
-    (Node(rootLabel._1, fst.value), Node(rootLabel._2, snd.value))
+    lazy val uz = subForest.map(_.unzip)
+    lazy val fst = uz map (_._1)
+    lazy val snd = uz map (_._2)
+    (Node(rootLabel._1, fst), Node(rootLabel._2, snd))
   }
 
   def foldNode[Z](f: A => Stream[Tree[A]] => Z): Z =
@@ -152,6 +152,7 @@ sealed abstract class Tree[A] {
       }
     }
   }
+
 }
 
 sealed abstract class TreeInstances {
@@ -224,10 +225,8 @@ object Tree extends TreeInstances {
   object Node {
     def apply[A](root: => A, forest: => Stream[Tree[A]]): Tree[A] = {
       new Tree[A] {
-        private[this] val rootc = Need(root)
-        private[this] val forestc = Need(forest)
-        def rootLabel = rootc.value
-        def subForest = forestc.value
+        lazy val rootLabel = root
+        lazy val subForest = forest
 
         override def toString = "<tree>"
       }
@@ -237,7 +236,7 @@ object Tree extends TreeInstances {
   }
 
   /**
-   *  Leaf represents a tree node with no children.
+   *  Leaf represents a a tree node with no children.
    *
    *  You can use Leaf for tree construction or pattern matching.
    */
