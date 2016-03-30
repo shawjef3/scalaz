@@ -18,4 +18,11 @@ object TreeTestJVM extends SpecLite {
     tree.flatten must_== (size to 0 by -1).toStream
   }
 
+  "deep Tree toStrictTree should not cause a stack overflow" ! {
+    val size = 1000000
+    val tree = (1 to size).foldLeft(Leaf(0))((x, y) => Node(y, Stream(x)))
+    val strictTree = (1 to size).foldLeft(StrictTree.Leaf(0))((x, y) => StrictTree.Node(y, Vector(x)))
+    tree.toStrictTree must_== strictTree
+  }
+
 }

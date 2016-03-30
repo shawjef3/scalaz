@@ -127,6 +127,17 @@ sealed abstract class Tree[A] {
       }
     }
   }
+
+  private def strictChildren: Trampoline[Stream[StrictTree[A]]] =
+    Applicative[Trampoline].traverse(subForest)(tree => Trampoline.suspend(tree.toStrictTreeTrampoline))
+
+  private def toStrictTreeTrampoline: Trampoline[StrictTree[A]] = {
+    strictChildren.flatMap(c => Trampoline.delay(c.toVector)).map(strictChildren => StrictTree(rootLabel, strictChildren))
+  }
+
+  def toStrictTree: StrictTree[A] = {
+    toStrictTreeTrampoline.run
+  }
 }
 
 sealed abstract class TreeInstances {
