@@ -112,14 +112,6 @@ sealed abstract class StrictTreeInstances {
       case h +: t => t.foldLeft(z(h))(f)
     }
     override def foldMap[A, B](fa: StrictTree[A])(f: A => B)(implicit F: Monoid[B]): B = fa foldMap f
-    def zip[A, B](aa: => StrictTree[A], bb: => StrictTree[B]): StrictTree[(A, B)] = {
-      val a = aa
-      val b = bb
-      StrictTree.Node(
-        (a.rootLabel, b.rootLabel),
-        Zip[Vector].zipWith(a.subForest, b.subForest)(zip(_, _))
-      )
-    }
     def alignWith[A, B, C](f: (\&/[A, B]) ⇒ C): (StrictTree[A], StrictTree[B]) => StrictTree[C] = {
       def align(ta: StrictTree[A], tb: StrictTree[B]): StrictTree[C] =
         StrictTree.Node(f(\&/(ta.rootLabel, tb.rootLabel)), Align[Vector].alignWith[StrictTree[A], StrictTree[B], StrictTree[C]]({
@@ -129,7 +121,7 @@ sealed abstract class StrictTreeInstances {
         })(ta.subForest, tb.subForest))
       align _
     }
-    def zip[A, B](a: StrictTree[A], b: StrictTree[B]): StrictTree[(A, B)] = {
+    def zip[A, B](a: => StrictTree[A], b: => StrictTree[B]): StrictTree[(A, B)] = {
       StrictTree.Node(
         (a.rootLabel, b.rootLabel),
         Zip[Vector].zipWith(a.subForest, b.subForest)(zip(_, _))
