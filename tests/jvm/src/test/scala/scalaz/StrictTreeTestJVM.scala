@@ -7,7 +7,7 @@ import org.scalacheck.Prop.forAll
 
 object StrictTreeTestJVM extends SpecLite {
 
-  "ScalazArbitrary.treeGenSized" ! forAll(Gen.choose(1, 200)){ size =>
+  "ScalazArbitrary.strictTreeGenSized" ! forAll(Gen.choose(1, 200)){ size =>
     val gen = strictTreeGenSized[Unit](size)
     Stream.continually(gen.sample).flatten.take(10).map(Foldable[StrictTree].length(_)).forall(_ == size)
   }
