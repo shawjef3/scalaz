@@ -1,0 +1,208 @@
+package scalaz
+
+import std.vector.{vectorInstance, vectorMonoid}
+
+/**
+  *
+  * @param rootLabel The label at the root of this tree.
+  * @param subForest The child nodes of this tree.
+  * @tparam A
+  */
+case class StrictTree[A](
+  rootLabel: A,
+  subForest: Vector[StrictTree[A]]
+) {
+
+  import StrictTree._
+
+  /** Maps the elements of the StrictTree into a Monoid and folds the resulting StrictTree. */
+  def foldMap[B: Monoid](f: A => B): B =
+    Monoid[B].append(f(rootLabel), Foldable[Vector].foldMap[StrictTree[A], B](subForest)((_: StrictTree[A]).foldMap(f)))
+
+  def foldRight[B](z: B)(f: (A, => B) => B): B =
+    Foldable[Vector].foldRight(flatten, z)(f)
+
+  /** A 2D String representation of this StrictTree. */
+  def drawTree(implicit sh: Show[A]): String = {
+    toTree.drawTree
+  }
+
+  /** A histomorphic transform. Each element in the resulting tree
+    * is a function of the corresponding element in this tree
+    * and the histomorphic transform of its children.
+    * */
+  def scanr[B](g: (A, Vector[StrictTree[B]]) => B): StrictTree[B] = {
+    val c = subForest.map(_.scanr(g))
+    Node(g(rootLabel, c), c)
+  }
+
+  /** Pre-order traversal. */
+  def flatten: Vector[A] = {
+    toTree.flatten.toVector
+  }
+
+  def size: Int = {
+    1 + subForest.map(_.size).sum
+  }
+
+  /** Breadth-first traversal. */
+  def levels: Vector[Vector[A]] = {
+    val f = (s: Vector[StrictTree[A]]) => {
+      Foldable[Vector].foldMap(s)((_: StrictTree[A]).subForest)
+    }
+    Vector.iterate(Vector(this), size)(f) takeWhile (!_.isEmpty) map (_ map (_.rootLabel))
+  }
+
+  def toTree: Tree[A] = {
+    Tree.Node[A](rootLabel, subForest.toStream.map(_.toTree))
+  }
+
+  /** Binds the given function across all the subtrees of this tree. */
+  def cobind[B](f: StrictTree[A] => B): StrictTree[B] = unfoldTree(this)(t => (f(t), () => t.subForest))
+
+  /** A TreeLoc zipper of this tree, focused on the root node. */
+  def loc: TreeLoc[A] = TreeLoc.loc(this.toTree, Stream.Empty, Stream.Empty, Stream.Empty)
+
+  /** Turns a tree of pairs into a pair of trees. */
+  def unzip[A1, A2](implicit p: A => (A1, A2)): (StrictTree[A1], StrictTree[A2]) = {
+    val uz = subForest.map(_.unzip)
+    val fst = uz map (_._1)
+    val snd = uz map (_._2)
+    (Node(rootLabel._1, fst), Node(rootLabel._2, snd))
+  }
+
+  def foldNode[Z](f: A => Vector[StrictTree[A]] => Z): Z =
+    f(rootLabel)(subForest)
+
+  def map[B](f: A => B): StrictTree[B] =
+    Node(f(rootLabel), subForest map (_ map f))
+
+  def flatMap[B](f: A => StrictTree[B]): StrictTree[B] = {
+    val r: StrictTree[B] = f(rootLabel)
+    Node(r.rootLabel, r.subForest ++ subForest.map(_.flatMap(f)))
+  }
+
+  def traverse1[G[_] : Apply, B](f: A => G[B]): G[StrictTree[B]] = {
+    val G = Apply[G]
+
+    subForest match {
+      case Vector() => G.map(f(rootLabel))(Leaf(_))
+      case x +: xs => G.apply2(f(rootLabel), NonEmptyList.nel(x, IList.fromFoldable(xs)).traverse1(_.traverse1(f))) {
+        case (h, t) => Node(h, t.list.toVector)
+      }
+    }
+  }
+}
+
+sealed abstract class StrictTreeInstances {
+  implicit val strictTreeInstance: Traverse1[StrictTree] with Monad[StrictTree] with Comonad[StrictTree] with Align[StrictTree] with Zip[StrictTree] = new Traverse1[StrictTree] with Monad[StrictTree] with Comonad[StrictTree] with Align[StrictTree] with Zip[StrictTree] {
+    def point[A](a: => A): StrictTree[A] = StrictTree.Leaf(a)
+    def cobind[A, B](fa: StrictTree[A])(f: StrictTree[A] => B): StrictTree[B] = fa cobind f
+    def copoint[A](p: StrictTree[A]): A = p.rootLabel
+    override def map[A, B](fa: StrictTree[A])(f: A => B) = fa map f
+    def bind[A, B](fa: StrictTree[A])(f: A => StrictTree[B]): StrictTree[B] = fa flatMap f
+    def traverse1Impl[G[_]: Apply, A, B](fa: StrictTree[A])(f: A => G[B]): G[StrictTree[B]] = fa traverse1 f
+    override def foldRight[A, B](fa: StrictTree[A], z: => B)(f: (A, => B) => B): B = fa.foldRight(z)(f)
+    override def foldMapRight1[A, B](fa: StrictTree[A])(z: A => B)(f: (A, => B) => B) = (fa.flatten.reverse: @unchecked) match {
+      case h +: t => t.foldLeft(z(h))((b, a) => f(a, b))
+    }
+    override def foldLeft[A, B](fa: StrictTree[A], z: B)(f: (B, A) => B): B =
+      fa.flatten.foldLeft(z)(f)
+    override def foldMapLeft1[A, B](fa: StrictTree[A])(z: A => B)(f: (B, A) => B): B = fa.flatten match {
+      case h +: t => t.foldLeft(z(h))(f)
+    }
+    override def foldMap[A, B](fa: StrictTree[A])(f: A => B)(implicit F: Monoid[B]): B = fa foldMap f
+    def zip[A, B](aa: => StrictTree[A], bb: => StrictTree[B]): StrictTree[(A, B)] = {
+      val a = aa
+      val b = bb
+      StrictTree.Node(
+        (a.rootLabel, b.rootLabel),
+        Zip[Vector].zipWith(a.subForest, b.subForest)(zip(_, _))
+      )
+    }
+    def alignWith[A, B, C](f: (\&/[A, B]) ⇒ C): (StrictTree[A], StrictTree[B]) => StrictTree[C] = {
+      def align(ta: StrictTree[A], tb: StrictTree[B]): StrictTree[C] =
+        StrictTree.Node(f(\&/(ta.rootLabel, tb.rootLabel)), Align[Vector].alignWith[StrictTree[A], StrictTree[B], StrictTree[C]]({
+          case \&/.This(sta) ⇒ sta map {a ⇒ f(\&/.This(a))}
+          case \&/.That(stb) ⇒ stb map {b ⇒ f(\&/.That(b))}
+          case \&/(sta, stb) ⇒ align(sta, stb)
+        })(ta.subForest, tb.subForest))
+      align _
+    }
+    def zip[A, B](a: StrictTree[A], b: StrictTree[B]): StrictTree[(A, B)] = {
+      StrictTree.Node(
+        (a.rootLabel, b.rootLabel),
+        Zip[Vector].zipWith(a.subForest, b.subForest)(zip(_, _))
+      )
+    }
+  }
+
+  implicit def treeEqual[A](implicit A0: Equal[A]): Equal[StrictTree[A]] =
+    new StrictTreeEqual[A] { def A = A0 }
+
+  implicit def treeOrder[A](implicit A0: Order[A]): Order[StrictTree[A]] =
+    new Order[StrictTree[A]] with StrictTreeEqual[A] {
+      def A = A0
+      import std.vector._
+      override def order(x: StrictTree[A], y: StrictTree[A]) =
+        A.order(x.rootLabel, y.rootLabel) match {
+          case Ordering.EQ =>
+            Order[Vector[StrictTree[A]]].order(x.subForest, y.subForest)
+          case x => x
+        }
+    }
+
+  /* TODO
+  def applic[A, B](f: StrictTree[A => B]) = a => StrictTree.node((f.rootLabel)(a.rootLabel), implicitly[Applic[newtypes.ZipVector]].applic(f.subForest.map(applic[A, B](_)).?)(a.subForest ?).value)
+   */
+}
+
+
+object StrictTree extends StrictTreeInstances {
+  /**
+   * Node represents a tree node that may have children.
+   *
+   * You can use Node for tree construction or pattern matching.
+   */
+  object Node {
+    def apply[A](root: A, forest: Vector[StrictTree[A]]): StrictTree[A] = {
+      StrictTree[A](root, forest)
+    }
+
+    def unapply[A](t: StrictTree[A]): Option[(A, Vector[StrictTree[A]])] = Some((t.rootLabel, t.subForest))
+  }
+
+  /**
+   *  Leaf represents a a tree node with no children.
+   *
+   *  You can use Leaf for tree construction or pattern matching.
+   */
+  object Leaf {
+    def apply[A](root: A): StrictTree[A] = {
+      Node(root, Vector.empty)
+    }
+
+    def unapply[A](t: StrictTree[A]): Option[A] = {
+      t match {
+        case Node(root, Vector()) =>
+          Some(root)
+        case _ =>
+          None
+      }
+    }
+  }
+
+  def unfoldForest[A, B](s: Vector[A])(f: A => (B, () => Vector[A])): Vector[StrictTree[B]] =
+    s.map(unfoldTree(_)(f))
+
+  def unfoldTree[A, B](v: A)(f: A => (B, () => Vector[A])): StrictTree[B] =
+    f(v) match {
+      case (a, bs) => Node(a, unfoldForest(bs.apply())(f))
+    }
+}
+
+private trait StrictTreeEqual[A] extends Equal[StrictTree[A]] {
+  def A: Equal[A]
+  override final def equal(a1: StrictTree[A], a2: StrictTree[A]) =
+    A.equal(a1.rootLabel, a2.rootLabel) && a1.subForest.corresponds(a2.subForest)(equal _)
+}
