@@ -1,5 +1,6 @@
 package scalaz
 
+import scalaz.Free.Trampoline
 import std.vector.{vectorInstance, vectorMonoid}
 
 /**
@@ -38,7 +39,11 @@ case class StrictTree[A](
 
   /** Pre-order traversal. */
   def flatten: Vector[A] = {
-    toTree.flatten.toVector
+    def trampolined(t: Vector[StrictTree[A]]): Trampoline[Vector[A]] = {
+      Applicative[Trampoline].traverse(t)(t => Trampoline.suspend(trampolined(t.subForest)).map(f => t.rootLabel +: f)).map(_.flatten)
+    }
+
+    trampolined(Vector(this)).run
   }
 
   def size: Int = {
