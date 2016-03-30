@@ -1,8 +1,8 @@
 package scalaz
 
+import scalaz.Free.Trampoline
 import scalaz.Trampoline._
 import std.stream.{streamInstance, streamMonoid}
-import Free.Trampoline
 
 /**
  * A multi-way tree, also known as a rose tree. Also known as Cofree[Stream, A].
@@ -152,6 +152,7 @@ sealed abstract class Tree[A] {
       }
     }
   }
+
 }
 
 sealed abstract class TreeInstances {
