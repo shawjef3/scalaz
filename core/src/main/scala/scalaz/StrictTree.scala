@@ -39,15 +39,36 @@ case class StrictTree[A](
 
   /** Pre-order traversal. */
   def flatten: Vector[A] = {
-    def trampolined(t: Vector[StrictTree[A]]): Trampoline[Vector[A]] = {
-      Applicative[Trampoline].traverse(t)(t => Trampoline.suspend(trampolined(t.subForest)).map(f => t.rootLabel +: f)).map(_.flatten)
+    import scala.collection.mutable.Buffer
+    import scala.collection.mutable.Stack
+
+    val q = Stack(this)
+
+    val result = Buffer.empty[A]
+
+    while (q.nonEmpty) {
+      val popped = q.pop()
+      result += popped.rootLabel
+      q.pushAll(popped.subForest.reverse)
     }
 
-    trampolined(Vector(this)).run
+    result.toVector
   }
 
   def size: Int = {
-    1 + subForest.map(_.size).sum
+    import scala.collection.mutable.Stack
+
+    val q = Stack(this.subForest)
+
+    var result = 1
+
+    while (q.nonEmpty) {
+      val popped = q.pop()
+      result += popped.size
+      q.pushAll(popped.map(_.subForest))
+    }
+
+    result
   }
 
   /** Breadth-first traversal. */
@@ -200,6 +221,26 @@ object StrictTree extends StrictTreeInstances {
 
 private trait StrictTreeEqual[A] extends Equal[StrictTree[A]] {
   def A: Equal[A]
-  override final def equal(a1: StrictTree[A], a2: StrictTree[A]) =
-    A.equal(a1.rootLabel, a2.rootLabel) && a1.subForest.corresponds(a2.subForest)(equal _)
+  override final def equal(a1: StrictTree[A], a2: StrictTree[A]) = {
+    def corresponds[B](a1: Vector[StrictTree[A]], a2: Vector[StrictTree[A]]): Trampoline[Boolean] = {
+      (a1.isEmpty, a2.isEmpty) match {
+        case (true, true) => Trampoline.done(true)
+        case (_, true) | (true, _) => Trampoline.done(false)
+        case _ =>
+          for {
+            heads <- trampolined(a1.head, a2.head)
+            tails <- corresponds(a1.tail, a2.tail)
+          } yield heads && tails
+      }
+    }
+
+    def trampolined(a1: StrictTree[A], a2: StrictTree[A]): Trampoline[Boolean] = {
+      for {
+        roots <- Trampoline.done(A.equal(a1.rootLabel, a2.rootLabel))
+        subForests <- corresponds(a1.subForest, a2.subForest)
+      } yield roots && subForests
+    }
+
+    trampolined(a1, a2).run
+  }
 }
