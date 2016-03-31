@@ -34,4 +34,13 @@ object StrictTreeTest extends SpecLite {
       "|",
       "`- 4").mkString("", "\n", "\n")
   }
+
+  "flatten is the same as the lazy Tree's flatten" ! forAll { (s: StrictTree[Byte]) =>
+    s.flatten must_=== s.toTree.flatten.toVector
+  }
+
+  "StrictTree#toTree and Tree#toStrictTree are inverses" ! forAll { (s: StrictTree[Byte]) =>
+    Equal[StrictTree[Byte]].equal(s, s.toTree.toStrictTree) must_=== true
+  }
+
 }

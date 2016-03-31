@@ -92,6 +92,23 @@ sealed abstract class Tree[A] {
     Stream.iterate(Stream(this))(f) takeWhile (!_.isEmpty) map (_ map (_.rootLabel))
   }
 
+  def toStrictTree: StrictTree[A] = {
+    import std.vector.vectorInstance
+
+    def trampolined(t: Tree[A]): Trampoline[StrictTree[A]] = {
+      t match {
+        case Tree.Leaf(root) =>
+          Trampoline.done(StrictTree.Leaf(root))
+        case Tree.Node(root, forest) =>
+          for {
+            strictForest <- Applicative[Trampoline].traverse(forest.toVector)(trampolined)
+          } yield StrictTree(root, strictForest)
+      }
+    }
+
+    trampolined(this).run
+  }
+
   /** Binds the given function across all the subtrees of this tree. */
   def cobind[B](f: Tree[A] => B): Tree[B] = unfoldTree(this)(t => (f(t), () => t.subForest))
 
@@ -247,6 +264,25 @@ object Tree extends TreeInstances {
 
 private trait TreeEqual[A] extends Equal[Tree[A]] {
   def A: Equal[A]
-  override final def equal(a1: Tree[A], a2: Tree[A]) =
-    A.equal(a1.rootLabel, a2.rootLabel) && a1.subForest.corresponds(a2.subForest)(equal _)
+
+  override final def equal(a1: Tree[A], a2: Tree[A]) = {
+    def corresponds[B](a1: Stream[Tree[A]], a2: Stream[Tree[A]]): Trampoline[Boolean] = {
+      if (a1.isEmpty) Trampoline.done(a2.isEmpty)
+      else
+        for {
+          heads <- trampolined(a1.head, a2.head)
+          tails <- corresponds(a1.tail, a2.tail)
+        } yield a2.nonEmpty && heads && tails
+    }
+
+    def trampolined(a1: Tree[A], a2: Tree[A]): Trampoline[Boolean] = {
+      for {
+        roots <- Trampoline.done(A.equal(a1.rootLabel, a2.rootLabel))
+        subForests <- corresponds(a1.subForest, a2.subForest)
+      } yield roots && subForests
+    }
+
+    trampolined(a1, a2).run
+  }
+
 }
