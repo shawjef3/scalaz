@@ -16,29 +16,25 @@ object StrictTreeTestJVM extends SpecLite {
   def genTree(size: Int): StrictTree[Int] =
     (1 to size).foldLeft(Leaf(0))((x, y) => Node(y, Vector(x)))
 
+  val size = 1000000
+
+  val deepTree = genTree(size)
+
   "deep StrictTree flatten should not cause a stack overflow" ! {
-    val size = 1000000
-    val tree = genTree(size)
-    tree.flatten must_== (size to 0 by -1).toVector
+    deepTree.flatten must_== (size to 0 by -1).toVector
   }
 
   "deep StrictTree size should not cause a stack overflow" ! {
-    val size = 1000000
-    val tree = genTree(size)
-    tree.size must_== size + 1
+    deepTree.size must_== size + 1
   }
 
   "deep equal should not cause a stack overflow" ! {
-    val size = 1000000
-    val tree = genTree(size)
-    Equal[StrictTree[Int]].equal(tree, tree) must_== true
+    Equal[StrictTree[Int]].equal(deepTree, deepTree) must_== true
   }
 
   "deep StrictTree toTree should not cause a stack overflow" ! {
-    val size = 1000000
-    val tree = genTree(size)
-    val expectedTree = TreeTestJVM.genTree(size)
-    val actualTree = tree.toTree
+    val expectedTree = TreeTestJVM.deepTree
+    val actualTree = deepTree.toTree
     Equal[Tree[Int]].equal(actualTree, expectedTree) must_== true
   }
 
