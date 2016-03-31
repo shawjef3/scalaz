@@ -223,12 +223,15 @@ private trait StrictTreeEqual[A] extends Equal[StrictTree[A]] {
   def A: Equal[A]
   override final def equal(a1: StrictTree[A], a2: StrictTree[A]) = {
     def corresponds[B](a1: Vector[StrictTree[A]], a2: Vector[StrictTree[A]]): Trampoline[Boolean] = {
-      if (a1.isEmpty) Trampoline.done(a2.isEmpty)
-      else
-        for {
-          heads <- trampolined(a1.head, a2.head)
-          tails <- corresponds(a1.tail, a2.tail)
-        } yield a2.nonEmpty && heads && tails
+      (a1.isEmpty, a2.isEmpty) match {
+        case (true, true) => Trampoline.done(true)
+        case (_, true) | (true, _) => Trampoline.done(false)
+        case _ =>
+          for {
+            heads <- trampolined(a1.head, a2.head)
+            tails <- corresponds(a1.tail, a2.tail)
+          } yield heads && tails
+      }
     }
 
     def trampolined(a1: StrictTree[A], a2: StrictTree[A]): Trampoline[Boolean] = {

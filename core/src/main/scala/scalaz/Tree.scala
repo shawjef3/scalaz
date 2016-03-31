@@ -145,16 +145,6 @@ sealed abstract class Tree[A] {
     }
   }
 
-  private def strictChildren: Trampoline[Stream[StrictTree[A]]] =
-    Applicative[Trampoline].traverse(subForest)(tree => Trampoline.suspend(tree.toStrictTreeTrampoline))
-
-  private def toStrictTreeTrampoline: Trampoline[StrictTree[A]] = {
-    strictChildren.flatMap(c => Trampoline.delay(c.toVector)).map(strictChildren => StrictTree(rootLabel, strictChildren))
-  }
-
-  def toStrictTree: StrictTree[A] = {
-    toStrictTreeTrampoline.run
-  }
 }
 
 sealed abstract class TreeInstances {
@@ -267,12 +257,15 @@ private trait TreeEqual[A] extends Equal[Tree[A]] {
 
   override final def equal(a1: Tree[A], a2: Tree[A]) = {
     def corresponds[B](a1: Stream[Tree[A]], a2: Stream[Tree[A]]): Trampoline[Boolean] = {
-      if (a1.isEmpty) Trampoline.done(a2.isEmpty)
-      else
-        for {
-          heads <- trampolined(a1.head, a2.head)
-          tails <- corresponds(a1.tail, a2.tail)
-        } yield a2.nonEmpty && heads && tails
+      (a1.isEmpty, a2.isEmpty) match {
+        case (true, true) => Trampoline.done(true)
+        case (_, true) | (true, _) => Trampoline.done(false)
+        case _ =>
+          for {
+            heads <- trampolined(a1.head, a2.head)
+            tails <- corresponds(a1.tail, a2.tail)
+          } yield heads && tails
+      }
     }
 
     def trampolined(a1: Tree[A], a2: Tree[A]): Trampoline[Boolean] = {
