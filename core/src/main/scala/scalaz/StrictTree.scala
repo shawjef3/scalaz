@@ -100,12 +100,31 @@ case class StrictTree[A](
   def foldNode[Z](f: A => Vector[StrictTree[A]] => Z): Z =
     f(rootLabel)(subForest)
 
-  def map[B](f: A => B): StrictTree[B] =
-    Node(f(rootLabel), subForest map (_ map f))
+  def mapTrampoline[B](f: A => Trampoline[B]): Trampoline[StrictTree[B]] = {
+    val A = Applicative[Trampoline]
+    for {
+      root <- f(rootLabel)
+      subForests <- A.traverse(subForest)(_.mapTrampoline(f))
+    } yield StrictTree(root, subForests)
+  }
+
+  def map[B](f: A => B): StrictTree[B] = {
+    val fTrampoline = (node: A) => Trampoline.delay(f(node))
+
+    mapTrampoline(fTrampoline).run
+  }
+
+  def flatMapTrampoline[B](f: A => Trampoline[StrictTree[B]]): Trampoline[StrictTree[B]] = {
+    val A = Applicative[Trampoline]
+    for {
+      r <- f(rootLabel)
+      subForests <- A.traverse(subForest)(_.flatMapTrampoline(f))
+    } yield StrictTree(r.rootLabel, r.subForest ++ subForests)
+  }
 
   def flatMap[B](f: A => StrictTree[B]): StrictTree[B] = {
-    val r: StrictTree[B] = f(rootLabel)
-    Node(r.rootLabel, r.subForest ++ subForest.map(_.flatMap(f)))
+    val fTrampoline = (node: A) => Trampoline.delay(f(node))
+    flatMapTrampoline(fTrampoline).run
   }
 
   def traverse1[G[_] : Apply, B](f: A => G[B]): G[StrictTree[B]] = {
@@ -116,6 +135,26 @@ case class StrictTree[A](
       case x +: xs => G.apply2(f(rootLabel), NonEmptyList.nel(x, IList.fromFoldable(xs)).traverse1(_.traverse1(f))) {
         case (h, t) => Node(h, t.list.toVector)
       }
+    }
+  }
+
+  def hashCodeTrampoline(): Trampoline[Int] = {
+    for {
+      rootHash <- Trampoline.done(rootLabel.hashCode())
+      subForestHashes <- Applicative[Trampoline].traverse(subForest)(_.hashCodeTrampoline())
+    } yield (rootHash, subForestHashes).hashCode()
+  }
+
+  override def hashCode(): Int = {
+    hashCodeTrampoline().run
+  }
+
+  override def equals(obj: scala.Any): Boolean = {
+    obj match {
+      case other: StrictTree[A] =>
+        StrictTree.badEqInstance[A].equal(this, other)
+      case _ =>
+        false
     }
   }
 }
@@ -138,15 +177,27 @@ sealed abstract class StrictTreeInstances {
       case h +: t => t.foldLeft(z(h))(f)
     }
     override def foldMap[A, B](fa: StrictTree[A])(f: A => B)(implicit F: Monoid[B]): B = fa foldMap f
-    def alignWith[A, B, C](f: (\&/[A, B]) ⇒ C): (StrictTree[A], StrictTree[B]) => StrictTree[C] = {
-      def align(ta: StrictTree[A], tb: StrictTree[B]): StrictTree[C] =
-        StrictTree.Node(f(\&/(ta.rootLabel, tb.rootLabel)), Align[Vector].alignWith[StrictTree[A], StrictTree[B], StrictTree[C]]({
-          case \&/.This(sta) ⇒ sta map {a ⇒ f(\&/.This(a))}
-          case \&/.That(stb) ⇒ stb map {b ⇒ f(\&/.That(b))}
-          case \&/(sta, stb) ⇒ align(sta, stb)
-        })(ta.subForest, tb.subForest))
-      align _
+
+    def alignWithTrampoline[A, B, C](f: (\&/[A, B]) ⇒ Trampoline[C])(a: StrictTree[A], b: StrictTree[B]): Trampoline[StrictTree[C]] = {
+      def alignTrampoline(ta: StrictTree[A], tb: StrictTree[B]): Trampoline[StrictTree[C]] =
+        for {
+          roots <- f(\&/(ta.rootLabel, tb.rootLabel))
+          subForests <- Applicative[Trampoline].sequence(
+            Align[Vector].alignWith[StrictTree[A], StrictTree[B], Trampoline[StrictTree[C]]] {
+              case \&/.This(sta) ⇒ sta mapTrampoline {a ⇒ f(\&/.This(a))}
+              case \&/.That(stb) ⇒ stb mapTrampoline {b ⇒ f(\&/.That(b))}
+              case \&/(sta, stb) ⇒ alignTrampoline(sta, stb)
+            } (ta.subForest, tb.subForest)
+          )
+        } yield StrictTree(roots, subForests)
+      alignTrampoline(a, b)
     }
+
+    override def alignWith[A, B, C](f: (\&/[A, B]) => C): (StrictTree[A], StrictTree[B]) => StrictTree[C] = {
+      (a, b) =>
+        alignWithTrampoline[A, B, C](aligned => Trampoline.delay(f(aligned)))(a, b).run
+    }
+
     def zip[A, B](a: => StrictTree[A], b: => StrictTree[B]): StrictTree[(A, B)] = {
       StrictTree.Node(
         (a.rootLabel, b.rootLabel),
@@ -217,6 +268,13 @@ object StrictTree extends StrictTreeInstances {
     f(v) match {
       case (a, bs) => Node(a, unfoldForest(bs.apply())(f))
     }
+
+  //Only used for .equals.
+  private def badEqInstance[A] = new StrictTreeEqual[A] {
+    override def A: Equal[A] = new Equal[A] {
+      override def equal(a1: A, a2: A): Boolean = a1.equals(a2)
+    }
+  }
 }
 
 private trait StrictTreeEqual[A] extends Equal[StrictTree[A]] {

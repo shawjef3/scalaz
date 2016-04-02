@@ -8,6 +8,8 @@ import std.AllInstances._
 
 object TreeTestJVM extends SpecLite {
 
+  val E = Equal[Tree[Int]]
+
   "ScalazArbitrary.treeGenSized" ! forAll(Gen.choose(1, 200)){ size =>
     val gen = treeGenSized[Unit](size)
     Stream.continually(gen.sample).flatten.take(10).map(Foldable[Tree].length(_)).forall(_ == size)
@@ -24,14 +26,23 @@ object TreeTestJVM extends SpecLite {
     deepTree.flatten must_== (size to 0 by -1).toStream
   }
 
-  "deep equal should not cause a stack overflow" ! {
-    Equal[Tree[Int]].equal(deepTree, deepTree) must_== true
+  "deep Equal.equal should not cause a stack overflow" ! {
+    E.equal(deepTree, deepTree) must_== true
+  }
+
+  "deep equals should not cause a stack overflow" ! {
+    deepTree.equals(deepTree) must_== true
   }
 
   "deep Tree toStrictTree should not cause a stack overflow" ! {
     val expectedTree = StrictTreeTestJVM.deepTree
     val actualTree = deepTree.toStrictTree
-    Equal[StrictTree[Int]].equal(actualTree, expectedTree) must_== true
+    StrictTreeTestJVM.E.equal(actualTree, expectedTree) must_== true
+  }
+
+  "deep flatMap should not cause a stack overflow" ! {
+    val actualTree = deepTree.flatMap(Leaf(_))
+    E.equals(deepTree, actualTree) must_== true
   }
 
 }

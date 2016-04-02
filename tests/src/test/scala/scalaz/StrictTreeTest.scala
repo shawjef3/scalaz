@@ -35,12 +35,26 @@ object StrictTreeTest extends SpecLite {
       "`- 4").mkString("", "\n", "\n")
   }
 
+  "Equals.equal works" ! forAll { (s: StrictTree[Byte]) =>
+    val E = Equal[StrictTree[Byte]]
+    E.equal(s, s) must_== true
+  }
+
+  "flatMap((Leaf(_)) is identity" ! forAll { (s: StrictTree[Byte]) =>
+    val actualTree = s.flatMap(Leaf(_))
+    Equal[StrictTree[Byte]].equal(actualTree, s) must_== true
+  }
+
   "flatten is the same as the lazy Tree's flatten" ! forAll { (s: StrictTree[Byte]) =>
     s.flatten must_=== s.toTree.flatten.toVector
   }
 
   "StrictTree#toTree and Tree#toStrictTree are inverses" ! forAll { (s: StrictTree[Byte]) =>
     Equal[StrictTree[Byte]].equal(s, s.toTree.toStrictTree) must_=== true
+  }
+
+  "size gives the same number of elements as flatten" ! forAll { (s: StrictTree[Byte]) =>
+    s.flatten.size must_=== s.size
   }
 
 }
