@@ -1,6 +1,9 @@
 package scalaz
 
+import java.util.NoSuchElementException
+import scala.collection.mutable
 import scalaz.Free.Trampoline
+import scalaz.Trampoline._
 import std.vector.{vectorInstance, vectorMonoid}
 
 /**
@@ -16,9 +19,16 @@ case class StrictTree[A](
 
   import StrictTree._
 
+  def foldMapTrampoline[B: Monoid](f: A => Trampoline[B]): Trampoline[B] = {
+    for {
+      root <- f(rootLabel)
+      subForests <- Foldable[Vector].foldMap[StrictTree[A], Trampoline[B]](subForest)(_.foldMapTrampoline(f))
+    } yield Monoid[B].append(root, subForests)
+  }
+
   /** Maps the elements of the StrictTree into a Monoid and folds the resulting StrictTree. */
   def foldMap[B: Monoid](f: A => B): B =
-    Monoid[B].append(f(rootLabel), Foldable[Vector].foldMap[StrictTree[A], B](subForest)((_: StrictTree[A]).foldMap(f)))
+    foldMapTrampoline(tree => done(f(tree))).run
 
   def foldRight[B](z: B)(f: (A, => B) => B): B =
     Foldable[Vector].foldRight(flatten, z)(f)
@@ -28,44 +38,44 @@ case class StrictTree[A](
     toTree.drawTree
   }
 
+  def scanrTrampoline[B](g: (A, Vector[StrictTree[B]]) => Trampoline[B]): Trampoline[StrictTree[B]] = {
+    for {
+      c <- Applicative[Trampoline].traverse(subForest)(_.scanrTrampoline(g))
+      root <- g(rootLabel, c)
+    } yield StrictTree(root, c)
+  }
+
   /** A histomorphic transform. Each element in the resulting tree
     * is a function of the corresponding element in this tree
     * and the histomorphic transform of its children.
     * */
-  def scanr[B](g: (A, Vector[StrictTree[B]]) => B): StrictTree[B] = {
-    val c = subForest.map(_.scanr(g))
-    Node(g(rootLabel, c), c)
-  }
+  def scanr[B](g: (A, Vector[StrictTree[B]]) => B): StrictTree[B] =
+    scanrTrampoline[B]{ case (arg0, arg1) => done(g(arg0, arg1)) }.run
 
   /** Pre-order traversal. */
   def flatten: Vector[A] = {
-    import scala.collection.mutable.Buffer
-    import scala.collection.mutable.Stack
+    val stack = mutable.Stack(this)
 
-    val q = Stack(this)
+    val result = mutable.Buffer.empty[A]
 
-    val result = Buffer.empty[A]
-
-    while (q.nonEmpty) {
-      val popped = q.pop()
+    while (stack.nonEmpty) {
+      val popped = stack.pop()
       result += popped.rootLabel
-      q.pushAll(popped.subForest.reverse)
+      stack.pushAll(popped.subForest.reverse)
     }
 
     result.toVector
   }
 
   def size: Int = {
-    import scala.collection.mutable.Stack
-
-    val q = Stack(this.subForest)
+    val stack = mutable.Stack(this.subForest)
 
     var result = 1
 
-    while (q.nonEmpty) {
-      val popped = q.pop()
+    while (stack.nonEmpty) {
+      val popped = stack.pop()
       result += popped.size
-      q.pushAll(popped.map(_.subForest))
+      stack.pushAll(popped.map(_.subForest))
     }
 
     result
@@ -101,29 +111,88 @@ case class StrictTree[A](
     f(rootLabel)(subForest)
 
   def mapTrampoline[B](f: A => Trampoline[B]): Trampoline[StrictTree[B]] = {
-    val A = Applicative[Trampoline]
     for {
       root <- f(rootLabel)
-      subForests <- A.traverse(subForest)(_.mapTrampoline(f))
+      subForests <- Applicative[Trampoline].traverse(subForest)(tree => tree.mapTrampoline(f))
     } yield StrictTree(root, subForests)
   }
 
   def map[B](f: A => B): StrictTree[B] = {
     val fTrampoline = (node: A) => Trampoline.delay(f(node))
-
     mapTrampoline(fTrampoline).run
   }
 
+  private case class DuplicateStack[B](
+    rootLabel: B,
+    subForest: Vector[StrictTree[A]],
+    var mappedSubForest: Vector[DuplicateStack[B]] = Vector.empty
+  ) {
+    def toStrictTree: StrictTree[B] = {
+
+      StrictTree(rootLabel, mappedSubForest.map(_.toStrictTree))
+
+      val stack = mutable.Stack[(B, mutable.Buffer[StrictTree[B]], mutable.Stack[DuplicateStack[B]])]()
+
+      var here = rootLabel
+
+      for (tree <- mappedSubForest) {
+        stack.push(tree.rootLabel)
+
+      }
+
+    }
+  }
+
+  private object DuplicateStack {
+    def apply[B](f: A => B)(t: StrictTree[A]): DuplicateStack[B] = {
+      DuplicateStack(f(t.rootLabel), t.subForest)
+    }
+  }
+
+  def mapProcedural[B](f: A => B): StrictTree[B] = {
+    val stack = mutable.Stack[DuplicateStack[B]]()
+
+    val root = DuplicateStack[B](f(rootLabel), subForest)
+
+    var here = root
+
+    while (stack.nonEmpty || here != null) {
+      if (here != null) {
+        if (here.subForest.isEmpty) here = null
+        else {
+          here.mappedSubForest =
+            here.subForest.map(DuplicateStack(f))
+
+          stack.pushAll(here.mappedSubForest)
+
+          here = here.mappedSubForest.head
+        }
+
+      } else {
+        here =
+          if (stack.isEmpty) null
+          else stack.pop()
+      }
+    }
+
+    root.toStrictTree
+  }
+
+  def duplicate: StrictTree[Unit] = {
+    subForest match {
+      case children => StrictTree((), children.map(_.duplicate))
+    }
+  }
+
   def flatMapTrampoline[B](f: A => Trampoline[StrictTree[B]]): Trampoline[StrictTree[B]] = {
-    val A = Applicative[Trampoline]
     for {
       r <- f(rootLabel)
-      subForests <- A.traverse(subForest)(_.flatMapTrampoline(f))
+      subForests <- Applicative[Trampoline].traverse(subForest)(_.flatMapTrampoline(f))
     } yield StrictTree(r.rootLabel, r.subForest ++ subForests)
   }
 
   def flatMap[B](f: A => StrictTree[B]): StrictTree[B] = {
-    val fTrampoline = (node: A) => Trampoline.delay(f(node))
+    val fTrampoline = (node: A) => done(f(node))
     flatMapTrampoline(fTrampoline).run
   }
 

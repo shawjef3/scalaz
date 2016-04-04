@@ -10,6 +10,15 @@ object TreeTestJVM extends SpecLite {
 
   val E = Equal[Tree[Int]]
 
+  def time[A](x: => A): Boolean = {
+    import java.time._
+    val time0 = Instant.now()
+    val result = x
+    val time1 = Instant.now()
+    println(s"time taken = ${Duration.between(time0, time1)}")
+    true
+  }
+
   "ScalazArbitrary.treeGenSized" ! forAll(Gen.choose(1, 200)){ size =>
     val gen = treeGenSized[Unit](size)
     Stream.continually(gen.sample).flatten.take(10).map(Foldable[Tree].length(_)).forall(_ == size)
@@ -21,6 +30,10 @@ object TreeTestJVM extends SpecLite {
   val size = 1000000
 
   val deepTree = genTree(size)
+
+  "deep foldMap should not cause a stack overflow" ! {
+    deepTree.foldMap(identity) must_== (1 to size).sum
+  }
 
   "deep Tree flatten should not cause a stack overflow" ! {
     deepTree.flatten must_== (size to 0 by -1).toStream
