@@ -118,70 +118,68 @@ case class StrictTree[A](
   }
 
   def map[B](f: A => B): StrictTree[B] = {
-    val fTrampoline = (node: A) => Trampoline.delay(f(node))
-    mapTrampoline(fTrampoline).run
+    mapProcedural[B](f)
   }
 
-  private case class DuplicateStack[B](
+  private case class MapStackElem[B](
+    f: A => B,
+    parentSubForest: Option[mutable.Buffer[StrictTree[B]]],
     rootLabel: B,
-    subForest: Vector[StrictTree[A]],
-    var mappedSubForest: Vector[DuplicateStack[B]] = Vector.empty
+    subForest: Vector[StrictTree[A]]
   ) {
+    private var ix: Int = 0
+
+    private val mappedSubForest: mutable.Buffer[StrictTree[B]] = mutable.Buffer.empty
+
     def toStrictTree: StrictTree[B] = {
+      StrictTree(rootLabel, mappedSubForest.toVector)
+    }
 
-      StrictTree(rootLabel, mappedSubForest.map(_.toStrictTree))
-
-      val stack = mutable.Stack[(B, mutable.Buffer[StrictTree[B]], mutable.Stack[DuplicateStack[B]])]()
-
-      var here = rootLabel
-
-      for (tree <- mappedSubForest) {
-        stack.push(tree.rootLabel)
-
+    def next(): Option[MapStackElem[B]] = {
+      subForest.lift(ix).map {
+        child =>
+          ix += 1
+          MapStackElem.ofChild(f, this, child)
       }
+    }
 
+    def finish(): Unit = {
+      parentSubForest.foreach(parent => parent += toStrictTree)
     }
   }
 
-  private object DuplicateStack {
-    def apply[B](f: A => B)(t: StrictTree[A]): DuplicateStack[B] = {
-      DuplicateStack(f(t.rootLabel), t.subForest)
+  private object MapStackElem {
+    def ofRoot[B](f: A => B): MapStackElem[B] = {
+      MapStackElem(f, None, f(rootLabel), subForest)
+    }
+
+    def ofChild[B](f: A => B, parent: MapStackElem[B], child: StrictTree[A]): MapStackElem[B] = {
+      MapStackElem(f, Some(parent.mappedSubForest), f(child.rootLabel), child.subForest)
     }
   }
 
+  /**
+    * This implementation is 10x faster than mapTrampoline for StrictTreeTestJVM's map test.
+    * @param f
+    * @tparam B
+    * @return
+    */
   def mapProcedural[B](f: A => B): StrictTree[B] = {
-    val stack = mutable.Stack[DuplicateStack[B]]()
+    val root = MapStackElem.ofRoot[B](f)
+    val stack = mutable.Stack[MapStackElem[B]](root)
 
-    val root = DuplicateStack[B](f(rootLabel), subForest)
-
-    var here = root
-
-    while (stack.nonEmpty || here != null) {
-      if (here != null) {
-        if (here.subForest.isEmpty) here = null
-        else {
-          here.mappedSubForest =
-            here.subForest.map(DuplicateStack(f))
-
-          stack.pushAll(here.mappedSubForest)
-
-          here = here.mappedSubForest.head
-        }
-
-      } else {
-        here =
-          if (stack.isEmpty) null
-          else stack.pop()
+    while (stack.nonEmpty) {
+      val here = stack.pop()
+      here.next() match {
+        case None =>
+          here.finish()
+        case Some(next) =>
+          stack.push(here)
+          stack.push(next)
       }
     }
 
     root.toStrictTree
-  }
-
-  def duplicate: StrictTree[Unit] = {
-    subForest match {
-      case children => StrictTree((), children.map(_.duplicate))
-    }
   }
 
   def flatMapTrampoline[B](f: A => Trampoline[StrictTree[B]]): Trampoline[StrictTree[B]] = {
