@@ -1,6 +1,5 @@
 package scalaz
 
-import java.util.NoSuchElementException
 import scala.collection.mutable
 import scalaz.Free.Trampoline
 import scalaz.Trampoline._
@@ -160,6 +159,7 @@ case class StrictTree[A](
 
   /**
     * This implementation is 10x faster than mapTrampoline for StrictTreeTestJVM's map test.
+    *
     * @param f
     * @tparam B
     * @return
@@ -189,9 +189,70 @@ case class StrictTree[A](
     } yield StrictTree(r.rootLabel, r.subForest ++ subForests)
   }
 
+  private case class FlatMapStackElem[B](
+    f: A => StrictTree[B],
+    parentSubForest: Option[mutable.Buffer[StrictTree[B]]],
+    mappedNode: StrictTree[B],
+    subForest: Vector[StrictTree[A]]
+  ) {
+    private var ix: Int = 0
+
+    private val mappedSubForest: mutable.Buffer[StrictTree[B]] = mutable.Buffer.empty
+
+    def toStrictTree: StrictTree[B] = {
+      StrictTree(mappedNode.rootLabel, mappedNode.subForest ++ mappedSubForest.toVector)
+    }
+
+    def next(): Option[FlatMapStackElem[B]] = {
+      subForest.lift(ix).map {
+        child =>
+          ix += 1
+          FlatMapStackElem.ofChild(f, this, child)
+      }
+    }
+
+    def finish(): Unit = {
+      parentSubForest.foreach(parent => parent += toStrictTree)
+    }
+  }
+
+  private object FlatMapStackElem {
+    def ofRoot[B](f: A => StrictTree[B]): FlatMapStackElem[B] = {
+      FlatMapStackElem(f, None, f(rootLabel), subForest)
+    }
+
+    def ofChild[B](f: A => StrictTree[B], parent: FlatMapStackElem[B], child: StrictTree[A]): FlatMapStackElem[B] = {
+      FlatMapStackElem(f, Some(parent.mappedSubForest), f(child.rootLabel), child.subForest)
+    }
+  }
+
+  /**
+    * This implementation is 9x faster than flatMapTrampoline for StrictTreeTestJVM's flatMap test.
+    *
+    * @param f
+    * @tparam B
+    * @return
+    */
+  def flatMapProcedural[B](f: A => StrictTree[B]): StrictTree[B] = {
+    val root = FlatMapStackElem.ofRoot[B](f)
+    val stack = mutable.Stack[FlatMapStackElem[B]](root)
+
+    while (stack.nonEmpty) {
+      val here = stack.pop()
+      here.next() match {
+        case None =>
+          here.finish()
+        case Some(next) =>
+          stack.push(here)
+          stack.push(next)
+      }
+    }
+
+    root.toStrictTree
+  }
+
   def flatMap[B](f: A => StrictTree[B]): StrictTree[B] = {
-    val fTrampoline = (node: A) => done(f(node))
-    flatMapTrampoline(fTrampoline).run
+    flatMapProcedural(f)
   }
 
   def traverse1[G[_] : Apply, B](f: A => G[B]): G[StrictTree[B]] = {
