@@ -67,6 +67,11 @@ object StrictTreeTestJVM extends SpecLite {
     //must_== true
   }
 
+  "deep hashCode should not cause a stack overflow" ! {
+    time(deepTree.hashCode)
+    //must_== true
+  }
+
   "deep equals should not cause a stack overflow" ! {
     time(deepTree.equals(deepTree))
     //must_== true

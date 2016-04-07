@@ -15,6 +15,7 @@ case class StrictTree[A](
   rootLabel: A,
   subForest: Vector[StrictTree[A]]
 ) {
+  node =>
 
   import StrictTree._
 
@@ -44,12 +45,41 @@ case class StrictTree[A](
     } yield StrictTree(root, c)
   }
 
+  private object ScanrStackElem {
+    private def combiner[B](
+      f: (A, Vector[StrictTree[B]]) => B
+    )(rootLabel: A
+    )(subForest: Vector[StrictTree[B]]
+    ): StrictTree[B] = {
+      StrictTree[B](f(rootLabel, subForest), subForest)
+    }
+
+    def ofRoot[B](f: (A, Vector[StrictTree[B]]) => B): StackElem[B, StrictTree[B]] = {
+      StackElem(None, node, combiner(f))
+    }
+  }
+
+  def scanrProcedural[B](f: (A, Vector[StrictTree[B]]) => B): StrictTree[B] = {
+    val root = ScanrStackElem.ofRoot[B](f)
+    val stack = mutable.Stack[StackElem[B, StrictTree[B]]](root)
+
+    while (stack.nonEmpty) {
+      val here = stack.pop()
+      for (next <- here.next()) {
+          stack.push(here)
+          stack.push(next)
+      }
+    }
+
+    root.result
+  }
+
   /** A histomorphic transform. Each element in the resulting tree
     * is a function of the corresponding element in this tree
     * and the histomorphic transform of its children.
     * */
   def scanr[B](g: (A, Vector[StrictTree[B]]) => B): StrictTree[B] =
-    scanrTrampoline[B]{ case (arg0, arg1) => done(g(arg0, arg1)) }.run
+    scanrProcedural[B]{ case (arg0, arg1) => g(arg0, arg1) }
 
   /** Pre-order traversal. */
   def flatten: Vector[A] = {
@@ -120,40 +150,42 @@ case class StrictTree[A](
     mapProcedural[B](f)
   }
 
-  private case class MapStackElem[B](
-    f: A => B,
-    parentSubForest: Option[mutable.Buffer[StrictTree[B]]],
-    rootLabel: B,
-    subForest: Vector[StrictTree[A]]
+  private case class StackElem[B, C](
+    parent: Option[StackElem[B, C]],
+    here: StrictTree[A],
+    combiner: A => Vector[C] => C
   ) {
     private var ix: Int = 0
 
-    private val mappedSubForest: mutable.Buffer[StrictTree[B]] = mutable.Buffer.empty
+    private val mappedSubForest: mutable.Buffer[C] = mutable.Buffer.empty
 
-    def toStrictTree: StrictTree[B] = {
-      StrictTree(rootLabel, mappedSubForest.toVector)
+    def result: C = {
+      combiner(here.rootLabel)(mappedSubForest.toVector)
     }
 
-    def next(): Option[MapStackElem[B]] = {
-      subForest.lift(ix).map {
+    def next(): Option[StackElem[B, C]] = {
+      val result = subForest.lift(ix).map {
         child =>
           ix += 1
-          MapStackElem.ofChild(f, this, child)
+          StackElem(Some(this), child, combiner)
       }
+
+      if (result.isEmpty) finish()
+      result
     }
 
-    def finish(): Unit = {
-      parentSubForest.foreach(parent => parent += toStrictTree)
+    private def finish(): Unit = {
+      parent.foreach(_.mappedSubForest += result)
     }
   }
 
   private object MapStackElem {
-    def ofRoot[B](f: A => B): MapStackElem[B] = {
-      MapStackElem(f, None, f(rootLabel), subForest)
+    private def combiner[B](f: A => B)(rootLabel: A)(subForest: Vector[StrictTree[B]]): StrictTree[B] = {
+      StrictTree[B](f(rootLabel), subForest)
     }
 
-    def ofChild[B](f: A => B, parent: MapStackElem[B], child: StrictTree[A]): MapStackElem[B] = {
-      MapStackElem(f, Some(parent.mappedSubForest), f(child.rootLabel), child.subForest)
+    def ofRoot[B](f: A => B): StackElem[B, StrictTree[B]] = {
+      StackElem(None, node, combiner(f))
     }
   }
 
@@ -166,20 +198,17 @@ case class StrictTree[A](
     */
   def mapProcedural[B](f: A => B): StrictTree[B] = {
     val root = MapStackElem.ofRoot[B](f)
-    val stack = mutable.Stack[MapStackElem[B]](root)
+    val stack = mutable.Stack[StackElem[B, StrictTree[B]]](root)
 
     while (stack.nonEmpty) {
       val here = stack.pop()
-      here.next() match {
-        case None =>
-          here.finish()
-        case Some(next) =>
+      for (next <- here.next()) {
           stack.push(here)
           stack.push(next)
       }
     }
 
-    root.toStrictTree
+    root.result
   }
 
   def flatMapTrampoline[B](f: A => Trampoline[StrictTree[B]]): Trampoline[StrictTree[B]] = {
@@ -189,40 +218,16 @@ case class StrictTree[A](
     } yield StrictTree(r.rootLabel, r.subForest ++ subForests)
   }
 
-  private case class FlatMapStackElem[B](
-    f: A => StrictTree[B],
-    parentSubForest: Option[mutable.Buffer[StrictTree[B]]],
-    mappedNode: StrictTree[B],
-    subForest: Vector[StrictTree[A]]
-  ) {
-    private var ix: Int = 0
-
-    private val mappedSubForest: mutable.Buffer[StrictTree[B]] = mutable.Buffer.empty
-
-    def toStrictTree: StrictTree[B] = {
-      StrictTree(mappedNode.rootLabel, mappedNode.subForest ++ mappedSubForest.toVector)
-    }
-
-    def next(): Option[FlatMapStackElem[B]] = {
-      subForest.lift(ix).map {
-        child =>
-          ix += 1
-          FlatMapStackElem.ofChild(f, this, child)
-      }
-    }
-
-    def finish(): Unit = {
-      parentSubForest.foreach(parent => parent += toStrictTree)
-    }
-  }
-
   private object FlatMapStackElem {
-    def ofRoot[B](f: A => StrictTree[B]): FlatMapStackElem[B] = {
-      FlatMapStackElem(f, None, f(rootLabel), subForest)
+    def combiner[B](f: A => StrictTree[B])(root: A)(subForest: Vector[StrictTree[B]]): StrictTree[B] = {
+      val StrictTree(rootLabel0, subForest0) = f(root)
+      StrictTree(rootLabel0, subForest0 ++ subForest)
     }
 
-    def ofChild[B](f: A => StrictTree[B], parent: FlatMapStackElem[B], child: StrictTree[A]): FlatMapStackElem[B] = {
-      FlatMapStackElem(f, Some(parent.mappedSubForest), f(child.rootLabel), child.subForest)
+    def ofRoot[B](
+      f: A => StrictTree[B]
+    ): StackElem[StrictTree[B], StrictTree[B]] = {
+      StackElem[StrictTree[B], StrictTree[B]](None, node, combiner(f))
     }
   }
 
@@ -235,20 +240,17 @@ case class StrictTree[A](
     */
   def flatMapProcedural[B](f: A => StrictTree[B]): StrictTree[B] = {
     val root = FlatMapStackElem.ofRoot[B](f)
-    val stack = mutable.Stack[FlatMapStackElem[B]](root)
+    val stack = mutable.Stack[StackElem[StrictTree[B], StrictTree[B]]](root)
 
     while (stack.nonEmpty) {
       val here = stack.pop()
-      here.next() match {
-        case None =>
-          here.finish()
-        case Some(next) =>
+      for (next <- here.next()) {
           stack.push(here)
           stack.push(next)
       }
     }
 
-    root.toStrictTree
+    root.result
   }
 
   def flatMap[B](f: A => StrictTree[B]): StrictTree[B] = {
