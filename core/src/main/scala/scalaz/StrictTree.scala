@@ -16,32 +16,73 @@ case class StrictTree[A](
   rootLabel: A,
   subForest: Vector[StrictTree[A]]
 ) {
-  node =>
 
   import StrictTree._
 
-  def runProcedure[B, C](stack: util.Stack[StackElem[B, C]]): Unit = {
-    while (! stack.isEmpty) {
+  /**
+    * Run a bottom-up algorithm.
+    *
+    * This is the framework for several stackless methods, such as map.
+    *
+    * @param combiner is a function from a label and the mapped children to the new result.
+    */
+  private def runBottomUp[B](
+    combiner: A => mutable.Buffer[B] => B
+  ): B = {
+    val root = BottomUpStackElem[B](None, this)
+    val stack = new util.Stack[BottomUpStackElem[B]]()
+    stack.push(root)
+
+    while (!stack.isEmpty) {
       val here = stack.peek()
-      here.next() match {
-        case Some(next) =>
-          stack.push(next)
+      here.nextChild() match {
+        case Some(child) =>
+          val nextStackElem = BottomUpStackElem[B](Some(here), child)
+          stack.push(nextStackElem)
         case None =>
+          //The "here" node is completed, so add its result to its parents completed children.
+          val result = combiner(here.tree.rootLabel)(here.mappedSubForest)
+          here.parent.foreach(_.mappedSubForest += result)
           stack.pop()
+      }
+    }
+
+    combiner(root.tree.rootLabel)(root.mappedSubForest)
+  }
+
+  private case class BottomUpStackElem[B](
+    parent: Option[BottomUpStackElem[B]],
+    tree: StrictTree[A]
+  ) {
+    private var ix: Int = 0
+
+    val mappedSubForest: mutable.Buffer[B] = mutable.Buffer.empty
+
+    def nextChild(): Option[StrictTree[A]] = {
+      for (child <- tree.subForest.lift(ix)) yield {
+        ix += 1
+        child
       }
     }
   }
 
-  def foldMapTrampoline[B: Monoid](f: A => Trampoline[B]): Trampoline[B] = {
-    for {
-      root <- f(rootLabel)
-      subForests <- Foldable[Vector].foldMap[StrictTree[A], Trampoline[B]](subForest)(_.foldMapTrampoline(f))
-    } yield Monoid[B].append(root, subForests)
+  /**
+    * This implementation is 9x faster than the trampolined implementation for StrictTreeTestJVM's foldMap test.
+    */
+  private def foldMapCombiner[B: Monoid](
+    f: A => B
+  )(rootLabel: A
+  )(subForest: mutable.Buffer[B]
+  ): B = {
+    val mappedRoot = f(rootLabel)
+    val foldedForest = Foldable[Vector].foldMap[B, B](subForest.toVector)(identity)
+
+    Monoid[B].append(mappedRoot, foldedForest)
   }
 
   /** Maps the elements of the StrictTree into a Monoid and folds the resulting StrictTree. */
   def foldMap[B: Monoid](f: A => B): B =
-    foldMapTrampoline(tree => done(f(tree))).run
+    runBottomUp(foldMapCombiner(f))
 
   def foldRight[B](z: B)(f: (A, => B) => B): B =
     Foldable[Vector].foldRight(flatten, z)(f)
@@ -51,43 +92,23 @@ case class StrictTree[A](
     toTree.drawTree
   }
 
-  private object ScanrStackElem {
-    private def combiner[B](
-      f: (A, Vector[StrictTree[B]]) => B
-    )(rootLabel: A
-    )(subForest: Vector[StrictTree[B]]
-    ): StrictTree[B] = {
-      StrictTree[B](f(rootLabel, subForest), subForest)
-    }
-
-    def ofRoot[B](f: (A, Vector[StrictTree[B]]) => B): StackElem[B, StrictTree[B]] = {
-      StackElem(None, node, combiner(f))
-    }
-  }
-
   /**
-    * This implementation is 16x faster than scanrTrampoline for StrictTreeTestJVM's scanr test.
-    *
-    * @param f
-    * @tparam B
-    * @return
+    * This implementation is 16x faster than the trampolined implementation for StrictTreeTestJVM's scanr test.
     */
-  def scanrProcedural[B](f: (A, Vector[StrictTree[B]]) => B): StrictTree[B] = {
-    val root = ScanrStackElem.ofRoot[B](f)
-    val stack = new util.Stack[StackElem[B, StrictTree[B]]]()
-    stack.push(root)
-
-    runProcedure(stack)
-
-    root.result
+  private def scanrCombiner[B](
+    f: (A, Seq[StrictTree[B]]) => B
+  )(rootLabel: A
+  )(subForest: mutable.Buffer[StrictTree[B]]
+  ): StrictTree[B] = {
+    StrictTree[B](f(rootLabel, subForest), subForest.toVector)
   }
 
   /** A histomorphic transform. Each element in the resulting tree
     * is a function of the corresponding element in this tree
     * and the histomorphic transform of its children.
     */
-  def scanr[B](g: (A, Vector[StrictTree[B]]) => B): StrictTree[B] =
-    scanrProcedural[B]{ case (arg0, arg1) => g(arg0, arg1) }
+  def scanr[B](g: (A, Seq[StrictTree[B]]) => B): StrictTree[B] =
+    runBottomUp(scanrCombiner(g))
 
   /** Pre-order traversal. */
   def flatten: Vector[A] = {
@@ -98,7 +119,7 @@ case class StrictTree[A](
     while (stack.nonEmpty) {
       val popped = stack.pop()
       result += popped.rootLabel
-      stack.pushAll(popped.subForest.reverse)
+      popped.subForest.reverseIterator.foreach(stack.push)
     }
 
     result.toVector
@@ -147,105 +168,27 @@ case class StrictTree[A](
   def foldNode[Z](f: A => Vector[StrictTree[A]] => Z): Z =
     f(rootLabel)(subForest)
 
-  def map[B](f: A => B): StrictTree[B] = {
-    mapProcedural[B](f)
-  }
-
-  private case class StackElem[B, C](
-    parent: Option[StackElem[B, C]],
-    here: StrictTree[A],
-    combiner: A => Vector[C] => C
-  ) {
-    private var ix: Int = 0
-
-    private val mappedSubForest: mutable.Buffer[C] = mutable.Buffer.empty
-
-    def result: C = {
-      combiner(here.rootLabel)(mappedSubForest.toVector)
-    }
-
-    def next(): Option[StackElem[B, C]] = {
-      val maybeChild =
-        for (child <- here.subForest.lift(ix)) yield {
-          ix += 1
-          StackElem(Some(this), child, combiner)
-        }
-
-      if (maybeChild.isEmpty) finish()
-      maybeChild
-    }
-
-    private def finish(): Unit = {
-      parent.foreach(_.mappedSubForest += result)
-    }
-  }
-
-  private object MapStackElem {
-    private def combiner[B](f: A => B)(rootLabel: A)(subForest: Vector[StrictTree[B]]): StrictTree[B] = {
-      StrictTree[B](f(rootLabel), subForest)
-    }
-
-    def ofRoot[B](f: A => B): StackElem[B, StrictTree[B]] = {
-      StackElem(None, node, combiner(f))
-    }
-  }
-
   /**
     * This implementation is 10x faster than mapTrampoline for StrictTreeTestJVM's map test.
-    *
-    * @param f
-    * @tparam B
-    * @return
     */
-  def mapProcedural[B](f: A => B): StrictTree[B] = {
-    val root = MapStackElem.ofRoot[B](f)
-    val stack = new util.Stack[StackElem[B, StrictTree[B]]]()
-    stack.push(root)
-
-    runProcedure(stack)
-
-    root.result
+  private def mapCombiner[B](f: A => B)(rootLabel: A)(subForest: Seq[StrictTree[B]]): StrictTree[B] = {
+    StrictTree[B](f(rootLabel), subForest.toVector)
   }
 
-  def flatMapTrampoline[B](f: A => Trampoline[StrictTree[B]]): Trampoline[StrictTree[B]] = {
-    for {
-      r <- f(rootLabel)
-      subForests <- Applicative[Trampoline].traverse(subForest)(_.flatMapTrampoline(f))
-    } yield StrictTree(r.rootLabel, r.subForest ++ subForests)
-  }
-
-  private object FlatMapStackElem {
-    def combiner[B](f: A => StrictTree[B])(root: A)(subForest: Vector[StrictTree[B]]): StrictTree[B] = {
-      val StrictTree(rootLabel0, subForest0) = f(root)
-      StrictTree(rootLabel0, subForest0 ++ subForest)
-    }
-
-    def ofRoot[B](
-      f: A => StrictTree[B]
-    ): StackElem[StrictTree[B], StrictTree[B]] = {
-      StackElem[StrictTree[B], StrictTree[B]](None, node, combiner(f))
-    }
+  def map[B](f: A => B): StrictTree[B] = {
+    runBottomUp(mapCombiner(f))
   }
 
   /**
     * This implementation is 9x faster than flatMapTrampoline for StrictTreeTestJVM's flatMap test.
-    *
-    * @param f
-    * @tparam B
-    * @return
     */
-  def flatMapProcedural[B](f: A => StrictTree[B]): StrictTree[B] = {
-    val root = FlatMapStackElem.ofRoot[B](f)
-    val stack = new util.Stack[StackElem[StrictTree[B], StrictTree[B]]]()
-    stack.push(root)
-
-    runProcedure(stack)
-
-    root.result
+  private def flatMapCombiner[B](f: A => StrictTree[B])(root: A)(subForest: Seq[StrictTree[B]]): StrictTree[B] = {
+    val StrictTree(rootLabel0, subForest0) = f(root)
+    StrictTree(rootLabel0, subForest0 ++ subForest)
   }
 
   def flatMap[B](f: A => StrictTree[B]): StrictTree[B] = {
-    flatMapProcedural(f)
+    runBottomUp(flatMapCombiner(f))
   }
 
   def traverse1[G[_] : Apply, B](f: A => G[B]): G[StrictTree[B]] = {
@@ -259,15 +202,17 @@ case class StrictTree[A](
     }
   }
 
-  def hashCodeTrampoline(): Trampoline[Int] = {
-    for {
-      rootHash <- Trampoline.done(rootLabel.hashCode())
-      subForestHashes <- Applicative[Trampoline].traverse(subForest)(_.hashCodeTrampoline())
-    } yield (rootHash, subForestHashes).hashCode()
+  private def hashCodeCombiner(root: A)(subForest: Seq[Int]): Int = {
+    root.hashCode ^ subForest.hashCode
   }
 
+  /**
+    * This implementation is 24x faster than the trampolined implementation for StrictTreeTestJVM's hashCode test.
+    *
+    * @return
+    */
   override def hashCode(): Int = {
-    hashCodeTrampoline().run
+    runBottomUp(hashCodeCombiner)
   }
 
   override def equals(obj: scala.Any): Boolean = {
@@ -299,7 +244,7 @@ sealed abstract class StrictTreeInstances {
     }
     override def foldMap[A, B](fa: StrictTree[A])(f: A => B)(implicit F: Monoid[B]): B = fa foldMap f
 
-    def alignWithTrampoline[A, B, C](f: (\&/[A, B]) ⇒ C)(a: StrictTree[A], b: StrictTree[B]): Trampoline[StrictTree[C]] = {
+    private def alignWithTrampoline[A, B, C](f: (\&/[A, B]) ⇒ C)(a: StrictTree[A], b: StrictTree[B]): Trampoline[StrictTree[C]] = {
       def alignTrampoline(ta: StrictTree[A], tb: StrictTree[B]): Trampoline[StrictTree[C]] =
         for {
           roots <- done(f(\&/(ta.rootLabel, tb.rootLabel)))
