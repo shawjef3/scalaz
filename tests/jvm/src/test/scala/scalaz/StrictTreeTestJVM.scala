@@ -22,83 +22,70 @@ object StrictTreeTestJVM extends SpecLite {
 
   val deepTree = genTree(size)
 
-  def time[A](x: => A): Boolean = {
-    import java.time._
-    val time0 = Instant.now()
-    val result = x
-    val time1 = Instant.now()
-    println(s"time taken = ${Duration.between(time0, time1)}")
+  "deep foldMap should not cause a stack overflow" ! {
+    deepTree.foldMap(identity)
     true
   }
 
-  "deep foldMap should not cause a stack overflow" ! {
-    //must_== (1 to size).sum
-    time(deepTree.foldMap(identity))
-  }
-
   "deep foldRight should not cause a stack overflow" ! {
-    // must_== (1 to size).sum
-    time(deepTree.foldRight[Int](0)(_ + _))
+    deepTree.foldRight[Int](0)(_ + _)
+    true
   }
 
   "deep flatten should not cause a stack overflow" ! {
-    time{deepTree.flatten}
-    //must_=== (size to 0 by -1).toVector
+    deepTree.flatten
+    true
   }
 
   "deep levels should not cause a stack overflow" ! {
-    time{deepTree.levels}
-    //must_=== (size to 0 by -1).map(i => Vector(i)).toVector
+    deepTree.levels
+    true
   }
 
   "deep scanr should not cause a stack overflow" ! {
-    def f(a: Int, b: Vector[StrictTree[Int]]): Int = a + b.size
-//    E.equal(deepTree.scanr[Int](f _), deepTree.map { case 0 => 0; case n => n + 1 }) must_== true
-    time{deepTree.scanr[Int](f _)}
+    def f(a: Int, b: Seq[StrictTree[Int]]): Int = a + b.size
+    deepTree.scanr[Int](f _)
+    true
   }
 
   "deep size should not cause a stack overflow" ! {
-    time(deepTree.size)
-    //must_== size + 1
+    deepTree.size
+    true
   }
 
   "deep Equal.equal should not cause a stack overflow" ! {
-    time(E.equal(deepTree, deepTree))
-    //must_== true
+    E.equal(deepTree, deepTree)
+    true
   }
 
   "deep hashCode should not cause a stack overflow" ! {
-    time(deepTree.hashCode)
-    //must_== true
+    deepTree.hashCode
+    true
   }
 
   "deep equals should not cause a stack overflow" ! {
-    time(deepTree.equals(deepTree))
-    //must_== true
+    deepTree.equals(deepTree)
+    true
   }
 
   "deep toTree should not cause a stack overflow" ! {
-//    val expectedTree = TreeTestJVM.deepTree
-//    val actualTree = deepTree.toTree
-//    TreeTestJVM.E.equal(actualTree, expectedTree) must_== true
-      time(deepTree.toTree)
+    deepTree.toTree
+    true
   }
 
   "deep map should not cause a stack overflow" ! {
-//    val actualTree = deepTree.map(_ + 1)
-//    val expectedTree = (2 to size + 1).foldLeft(Leaf(1))((x, y) => Node(y, Vector(x)))
-//    E.equal(actualTree, expectedTree) must_== true
-    time(deepTree.map(_ + 1))
+    deepTree.map(_ + 1)
+    true
   }
 
   "deep flatMap should not cause a stack overflow" ! {
-//    val actualTree = deepTree.flatMap(Leaf(_))
-//    E.equal(deepTree, actualTree) must_== true
-    time(deepTree.flatMap(Leaf(_)))
+    deepTree.flatMap(Leaf(_))
+    true
   }
 
   "deep align should not cause a stack overflow" ! {
-    time(Align[StrictTree].align(deepTree, deepTree))
+    Align[StrictTree].align(deepTree, deepTree)
+    true
   }
 
 }
