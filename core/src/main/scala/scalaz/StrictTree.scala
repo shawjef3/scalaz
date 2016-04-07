@@ -164,7 +164,7 @@ case class StrictTree[A](
     }
 
     def next(): Option[StackElem[B, C]] = {
-      val result = subForest.lift(ix).map {
+      val result = here.subForest.lift(ix).map {
         child =>
           ix += 1
           StackElem(Some(this), child, combiner)
