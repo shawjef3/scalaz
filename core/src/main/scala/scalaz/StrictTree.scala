@@ -1,5 +1,6 @@
 package scalaz
 
+import java.util
 import scala.collection.mutable
 import scalaz.Free.Trampoline
 import scalaz.Trampoline._
@@ -18,6 +19,18 @@ case class StrictTree[A](
   node =>
 
   import StrictTree._
+
+  def runProcedure[B, C](stack: util.Stack[StackElem[B, C]]): Unit = {
+    while (! stack.isEmpty) {
+      val here = stack.peek()
+      here.next() match {
+        case Some(next) =>
+          stack.push(next)
+        case None =>
+          stack.pop()
+      }
+    }
+  }
 
   def foldMapTrampoline[B: Monoid](f: A => Trampoline[B]): Trampoline[B] = {
     for {
@@ -38,13 +51,6 @@ case class StrictTree[A](
     toTree.drawTree
   }
 
-  def scanrTrampoline[B](g: (A, Vector[StrictTree[B]]) => Trampoline[B]): Trampoline[StrictTree[B]] = {
-    for {
-      c <- Applicative[Trampoline].traverse(subForest)(_.scanrTrampoline(g))
-      root <- g(rootLabel, c)
-    } yield StrictTree(root, c)
-  }
-
   private object ScanrStackElem {
     private def combiner[B](
       f: (A, Vector[StrictTree[B]]) => B
@@ -59,17 +65,19 @@ case class StrictTree[A](
     }
   }
 
+  /**
+    * This implementation is 16x faster than scanrTrampoline for StrictTreeTestJVM's scanr test.
+    *
+    * @param f
+    * @tparam B
+    * @return
+    */
   def scanrProcedural[B](f: (A, Vector[StrictTree[B]]) => B): StrictTree[B] = {
     val root = ScanrStackElem.ofRoot[B](f)
-    val stack = mutable.Stack[StackElem[B, StrictTree[B]]](root)
+    val stack = new util.Stack[StackElem[B, StrictTree[B]]]()
+    stack.push(root)
 
-    while (stack.nonEmpty) {
-      val here = stack.pop()
-      for (next <- here.next()) {
-          stack.push(here)
-          stack.push(next)
-      }
-    }
+    runProcedure(stack)
 
     root.result
   }
@@ -77,7 +85,7 @@ case class StrictTree[A](
   /** A histomorphic transform. Each element in the resulting tree
     * is a function of the corresponding element in this tree
     * and the histomorphic transform of its children.
-    * */
+    */
   def scanr[B](g: (A, Vector[StrictTree[B]]) => B): StrictTree[B] =
     scanrProcedural[B]{ case (arg0, arg1) => g(arg0, arg1) }
 
@@ -139,13 +147,6 @@ case class StrictTree[A](
   def foldNode[Z](f: A => Vector[StrictTree[A]] => Z): Z =
     f(rootLabel)(subForest)
 
-  def mapTrampoline[B](f: A => Trampoline[B]): Trampoline[StrictTree[B]] = {
-    for {
-      root <- f(rootLabel)
-      subForests <- Applicative[Trampoline].traverse(subForest)(tree => tree.mapTrampoline(f))
-    } yield StrictTree(root, subForests)
-  }
-
   def map[B](f: A => B): StrictTree[B] = {
     mapProcedural[B](f)
   }
@@ -164,14 +165,14 @@ case class StrictTree[A](
     }
 
     def next(): Option[StackElem[B, C]] = {
-      val result = here.subForest.lift(ix).map {
-        child =>
+      val maybeChild =
+        for (child <- here.subForest.lift(ix)) yield {
           ix += 1
           StackElem(Some(this), child, combiner)
-      }
+        }
 
-      if (result.isEmpty) finish()
-      result
+      if (maybeChild.isEmpty) finish()
+      maybeChild
     }
 
     private def finish(): Unit = {
@@ -198,15 +199,10 @@ case class StrictTree[A](
     */
   def mapProcedural[B](f: A => B): StrictTree[B] = {
     val root = MapStackElem.ofRoot[B](f)
-    val stack = mutable.Stack[StackElem[B, StrictTree[B]]](root)
+    val stack = new util.Stack[StackElem[B, StrictTree[B]]]()
+    stack.push(root)
 
-    while (stack.nonEmpty) {
-      val here = stack.pop()
-      for (next <- here.next()) {
-          stack.push(here)
-          stack.push(next)
-      }
-    }
+    runProcedure(stack)
 
     root.result
   }
@@ -240,15 +236,10 @@ case class StrictTree[A](
     */
   def flatMapProcedural[B](f: A => StrictTree[B]): StrictTree[B] = {
     val root = FlatMapStackElem.ofRoot[B](f)
-    val stack = mutable.Stack[StackElem[StrictTree[B], StrictTree[B]]](root)
+    val stack = new util.Stack[StackElem[StrictTree[B], StrictTree[B]]]()
+    stack.push(root)
 
-    while (stack.nonEmpty) {
-      val here = stack.pop()
-      for (next <- here.next()) {
-          stack.push(here)
-          stack.push(next)
-      }
-    }
+    runProcedure(stack)
 
     root.result
   }
@@ -308,14 +299,14 @@ sealed abstract class StrictTreeInstances {
     }
     override def foldMap[A, B](fa: StrictTree[A])(f: A => B)(implicit F: Monoid[B]): B = fa foldMap f
 
-    def alignWithTrampoline[A, B, C](f: (\&/[A, B]) ⇒ Trampoline[C])(a: StrictTree[A], b: StrictTree[B]): Trampoline[StrictTree[C]] = {
+    def alignWithTrampoline[A, B, C](f: (\&/[A, B]) ⇒ C)(a: StrictTree[A], b: StrictTree[B]): Trampoline[StrictTree[C]] = {
       def alignTrampoline(ta: StrictTree[A], tb: StrictTree[B]): Trampoline[StrictTree[C]] =
         for {
-          roots <- f(\&/(ta.rootLabel, tb.rootLabel))
+          roots <- done(f(\&/(ta.rootLabel, tb.rootLabel)))
           subForests <- Applicative[Trampoline].sequence(
             Align[Vector].alignWith[StrictTree[A], StrictTree[B], Trampoline[StrictTree[C]]] {
-              case \&/.This(sta) ⇒ sta mapTrampoline {a ⇒ f(\&/.This(a))}
-              case \&/.That(stb) ⇒ stb mapTrampoline {b ⇒ f(\&/.That(b))}
+              case \&/.This(sta) ⇒ done(sta map {a ⇒ f(\&/.This(a))})
+              case \&/.That(stb) ⇒ done(stb map {b ⇒ f(\&/.That(b))})
               case \&/(sta, stb) ⇒ alignTrampoline(sta, stb)
             } (ta.subForest, tb.subForest)
           )
@@ -325,7 +316,7 @@ sealed abstract class StrictTreeInstances {
 
     override def alignWith[A, B, C](f: (\&/[A, B]) => C): (StrictTree[A], StrictTree[B]) => StrictTree[C] = {
       (a, b) =>
-        alignWithTrampoline[A, B, C](aligned => Trampoline.delay(f(aligned)))(a, b).run
+        alignWithTrampoline[A, B, C](f)(a, b).run
     }
 
     def zip[A, B](a: => StrictTree[A], b: => StrictTree[B]): StrictTree[(A, B)] = {
